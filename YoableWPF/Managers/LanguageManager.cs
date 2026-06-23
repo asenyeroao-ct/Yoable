@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows;
 
@@ -30,14 +31,65 @@ namespace YoableWPF.Managers
             // Load English as fallback
             _fallbackDictionary = LoadLanguageResource("en-US");
 
-            // Load saved language preference
+            // Load saved language preference; if none, auto-detect from the system UI language
             var savedLanguage = Properties.Settings.Default.Language;
             if (!string.IsNullOrEmpty(savedLanguage) && SupportedLanguages.Any(l => l.Code == savedLanguage))
             {
                 _currentLanguage = savedLanguage;
             }
+            else
+            {
+                _currentLanguage = DetectSystemLanguage();
+            }
 
             LoadLanguage(_currentLanguage);
+        }
+
+        /// <summary>
+        /// Picks the best supported language for the current OS UI culture.
+        /// Chinese maps by script: Simplified (zh-Hans) -> zh-CN, Traditional (zh-Hant) -> zh-TW.
+        /// Falls back to English when the system language isn't supported.
+        /// </summary>
+        private static string DetectSystemLanguage()
+        {
+            try
+            {
+                var culture = CultureInfo.CurrentUICulture;
+
+                // Chinese: distinguish Simplified vs Traditional by script/region rather than exact code
+                if (culture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase))
+                {
+                    var name = culture.Name; // e.g. zh-CN, zh-TW, zh-HK, zh-Hans, zh-Hant-TW
+                    if (name.IndexOf("Hant", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("TW", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("HK", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("MO", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return "zh-TW";
+                    }
+                    return "zh-CN";
+                }
+
+                // Exact match (e.g. ja-JP, ru-RU)
+                if (SupportedLanguages.Any(l => l.Code.Equals(culture.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return SupportedLanguages.First(l => l.Code.Equals(culture.Name, StringComparison.OrdinalIgnoreCase)).Code;
+                }
+
+                // Two-letter match (e.g. system "ja" -> ja-JP, "ru" -> ru-RU)
+                var byLanguage = SupportedLanguages.FirstOrDefault(l =>
+                    l.Code.StartsWith(culture.TwoLetterISOLanguageName + "-", StringComparison.OrdinalIgnoreCase));
+                if (byLanguage != null)
+                {
+                    return byLanguage.Code;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"DetectSystemLanguage failed: {ex.Message}");
+            }
+
+            return "en-US";
         }
 
         public List<LanguageInfo> GetAvailableLanguages() => SupportedLanguages.ToList();
