@@ -365,6 +365,7 @@ FodyWeavers.xsd
 
 # Release packages / build artifacts (not tracked in git)
 Releases/
+dist/
 *.zip
 *.rar
 *.7z
