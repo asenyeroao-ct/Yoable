@@ -362,3 +362,9 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /.claude
+
+# Release packages / build artifacts (not tracked in git)
+Releases/
+*.zip
+*.rar
+*.7z
