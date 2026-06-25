@@ -31,8 +31,12 @@ For non-WPF version you can build the legacy source or use v1.2.0 from releases 
 
 ### 📥 Installation
 
+**Requirement:** Yoable needs the **[.NET 9 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/9.0/runtime?cid=getdotnetcore&runtime=desktop)** installed. If the app does not launch, install it first.
+
+需求:Yoable 需要先安裝 **[.NET 9 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/9.0/runtime?cid=getdotnetcore&runtime=desktop)**。如果程式無法開啟，請先安裝它。
+
 1. Download the latest release from our [GitHub Releases](https://github.com/Babyhamsta/Yoable/releases).
-2. Download and run Yoable (No install required!).
+2. Extract the zip and run `YoableWPF.exe`.
 3. (Optional) Load a **YOLO v5/v8/v11 (ONNX)** model for AI-assisted labeling.
 
 ### 🛠️ How to Use
