@@ -27,6 +27,10 @@ namespace YoableWPF.Managers
         // Track valid class IDs for orphan detection
         private HashSet<int> validClassIds = new HashSet<int> { 0 }; // Always include default class
         private int defaultClassId = 0;
+        // Until the project explicitly registers its classes, we must NOT treat any
+        // ClassId as orphaned. Otherwise labels drawn with classes 2..N get silently
+        // collapsed to the default class (0) before SetValidClassIds runs.
+        private bool validClassIdsInitialized = false;
         private static readonly CultureInfo CommaCulture = CultureInfo.GetCultureInfo("de-DE"); // Comma decimal separator
 
         /// <summary>
@@ -35,7 +39,8 @@ namespace YoableWPF.Managers
         public void SetValidClassIds(IEnumerable<int> classIds)
         {
             validClassIds = new HashSet<int>(classIds);
-            
+            validClassIdsInitialized = true;
+
             // Ensure we always have at least one valid class (default)
             if (validClassIds.Count == 0)
             {
@@ -51,6 +56,12 @@ namespace YoableWPF.Managers
         /// </summary>
         private bool ValidateAndFixClassId(LabelData label)
         {
+            // Never reassign ClassIds until the project's class list has been registered.
+            // This prevents legitimately-drawn labels (classes 2..N) from being collapsed
+            // to the default class when the valid-id set is still stale.
+            if (!validClassIdsInitialized)
+                return false;
+
             if (!validClassIds.Contains(label.ClassId))
             {
                 label.ClassId = defaultClassId;

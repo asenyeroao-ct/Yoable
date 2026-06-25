@@ -1,15 +1,30 @@
 ﻿using OpenCvSharp;
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using YoableWPF.Managers;
 using YoableWPF;
 using YoutubeExplode;
+using YoutubeExplode.Videos.Streams;
 using Size = OpenCvSharp.Size;
 using Rect = OpenCvSharp.Rect;
 
 public class YoutubeDownloader
 {
-    private readonly YoutubeClient youtube = new YoutubeClient();
+    // Shared HttpClient with a browser-like User-Agent. YouTube's streaming CDN
+    // returns 403 Forbidden for some requests that don't look like they come from
+    // a real client, so we set a desktop User-Agent to reduce those rejections.
+    private static readonly HttpClient httpClient = CreateHttpClient();
+    private readonly YoutubeClient youtube = new YoutubeClient(httpClient);
+
+    private static HttpClient CreateHttpClient()
+    {
+        var client = new HttpClient();
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        return client;
+    }
     private MainWindow mainWindow;
     private OverlayManager overlayManager;
     private CancellationTokenSource downloadCancellationToken;
@@ -42,21 +57,24 @@ public class YoutubeDownloader
             var video = await youtube.Videos.GetAsync(videoUrl);
             var streamManifest = await youtube.Videos.Streams.GetManifestAsync(videoUrl);
 
-            // Prefer H.264 (avc1) codec for best OpenCV compatibility
-            // AV1 and HEVC codecs often fail with OpenCV's bundled FFmpeg
-            var streamInfo = streamManifest.GetVideoStreams()
+            // Build an ordered list of candidate streams. We try them in order and
+            // fall back to the next one if a stream URL returns 403 Forbidden
+            // (YouTube sometimes rejects individual stream URLs even when the
+            // manifest succeeds).
+            var avc1Streams = streamManifest.GetVideoStreams()
                 .Where(s => s.Container == YoutubeExplode.Videos.Streams.Container.Mp4)
                 .Where(s => s.VideoCodec.Contains("avc1", StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(s => s.VideoQuality)
-                .FirstOrDefault();
+                .OrderByDescending(s => s.VideoQuality);
 
-            // Fall back to any MP4 stream if no H.264 available
-            streamInfo ??= streamManifest.GetVideoStreams()
+            // Then any remaining MP4 streams (non-avc1) as a fallback.
+            var otherMp4Streams = streamManifest.GetVideoStreams()
                 .Where(s => s.Container == YoutubeExplode.Videos.Streams.Container.Mp4)
-                .OrderByDescending(s => s.VideoQuality)
-                .FirstOrDefault();
+                .Where(s => !s.VideoCodec.Contains("avc1", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(s => s.VideoQuality);
 
-            if (streamInfo == null)
+            var candidateStreams = avc1Streams.Concat(otherMp4Streams).ToList();
+
+            if (candidateStreams.Count == 0)
             {
                 CustomMessageBox.Show(string.Format(LanguageManager.Instance.GetString("Msg_YouTube_NoCompatibleStream") ?? "No compatible video streams found for {0}", video.Title),
                     LanguageManager.Instance.GetString("Msg_YouTube_DownloadError") ?? "Download Error", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -69,24 +87,56 @@ public class YoutubeDownloader
             Directory.CreateDirectory(Path.Combine(videoDirectory, "frames"));
 
             videoPath = Path.Combine(videoDirectory, $"{video.Id}.mp4");
-            long totalBytes = streamInfo.Size.Bytes;
-            long downloadedBytes = 0;
 
-            var progress = new Progress<double>(p =>
+            // Try each candidate stream until one downloads successfully.
+            HttpRequestException lastDownloadError = null;
+            bool downloaded = false;
+
+            for (int i = 0; i < candidateStreams.Count; i++)
             {
-                if (!isDownloading) return;
-                downloadProgress = p * 100;
-                downloadedBytes = (long)(totalBytes * p);
+                IStreamInfo streamInfo = candidateStreams[i];
+                long totalBytes = streamInfo.Size.Bytes;
+                long downloadedBytes = 0;
+                isDownloading = true;
 
-                mainWindow.Dispatcher.Invoke(() =>
+                var progress = new Progress<double>(p =>
                 {
-                    overlayManager.UpdateMessage($"Downloading {video.Title}... {downloadProgress:F2}% ({FormatFileSize(downloadedBytes)} / {FormatFileSize(totalBytes)})");
-                    overlayManager.UpdateProgress((int)downloadProgress);
-                });
-            });
+                    if (!isDownloading) return;
+                    downloadProgress = p * 100;
+                    downloadedBytes = (long)(totalBytes * p);
 
-            await youtube.Videos.Streams.DownloadAsync(streamInfo, videoPath, progress, downloadCancellationToken.Token);
+                    mainWindow.Dispatcher.Invoke(() =>
+                    {
+                        overlayManager.UpdateMessage($"Downloading {video.Title}... {downloadProgress:F2}% ({FormatFileSize(downloadedBytes)} / {FormatFileSize(totalBytes)})");
+                        overlayManager.UpdateProgress((int)downloadProgress);
+                    });
+                });
+
+                try
+                {
+                    await youtube.Videos.Streams.DownloadAsync(streamInfo, videoPath, progress, downloadCancellationToken.Token);
+                    downloaded = true;
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    // 403 Forbidden (or similar) on this stream URL: try the next candidate.
+                    lastDownloadError = ex;
+                    mainWindow.Dispatcher.Invoke(() =>
+                    {
+                        overlayManager.UpdateMessage($"Stream failed, trying alternative ({i + 1}/{candidateStreams.Count})...");
+                        overlayManager.UpdateProgress(0);
+                    });
+                }
+            }
+
             isDownloading = false;
+
+            if (!downloaded)
+            {
+                // All candidate streams failed. Surface the underlying error.
+                throw lastDownloadError ?? new Exception("All video streams failed to download.");
+            }
 
             mainWindow.Dispatcher.Invoke(() => {
                 overlayManager.UpdateMessage("Preparing to extract frames...");

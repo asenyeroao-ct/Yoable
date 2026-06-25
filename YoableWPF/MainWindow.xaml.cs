@@ -2098,6 +2098,11 @@ namespace YoableWPF
                     progress,
                     tokenSource.Token);
 
+                // Export class names file (classes.txt) so training keeps the class names.
+                // YOLO label .txt files only store numeric class ids; without this file the
+                // class names are lost.
+                ExportClassesFile(exportDirectory);
+
                 overlayManager.HideOverlay();
                 CustomMessageBox.Show(LanguageManager.Instance.GetString("Msg_LabelsExported") ?? "Labels exported successfully!", LanguageManager.Instance.GetString("Msg_ExportComplete") ?? "Export Complete",
                     MessageBoxButton.OK, MessageBoxImage.Information);
@@ -2113,6 +2118,54 @@ namespace YoableWPF
                 overlayManager.HideOverlay();
                 CustomMessageBox.Show(string.Format(LanguageManager.Instance.GetString("Msg_ExportFailed") ?? "Export failed: {0}", ex.Message), LanguageManager.Instance.GetString("Msg_Error") ?? "Error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        /// <summary>
+        /// Writes the project's class names to disk alongside the YOLO labels.
+        /// Produces classes.txt (one name per ClassId line, indexed so line N == class N)
+        /// and a data.yaml for direct use in YOLO training.
+        /// </summary>
+        private void ExportClassesFile(string exportDirectory)
+        {
+            try
+            {
+                // Only real classes (skip the "nan"/ -1 placeholder), ordered by ClassId.
+                var classes = projectClasses
+                    .Where(c => c.ClassId >= 0)
+                    .OrderBy(c => c.ClassId)
+                    .ToList();
+
+                if (classes.Count == 0)
+                    return;
+
+                // Build a contiguous name list indexed by ClassId so that line index == id.
+                int maxClassId = classes.Max(c => c.ClassId);
+                var names = new string[maxClassId + 1];
+                for (int i = 0; i < names.Length; i++)
+                    names[i] = $"class_{i}"; // placeholder for any gap in ids
+
+                foreach (var c in classes)
+                    names[c.ClassId] = string.IsNullOrWhiteSpace(c.Name) ? $"class_{c.ClassId}" : c.Name.Trim();
+
+                // classes.txt
+                System.IO.File.WriteAllLines(
+                    System.IO.Path.Combine(exportDirectory, "classes.txt"),
+                    names);
+
+                // data.yaml (YOLO format)
+                var yaml = new System.Text.StringBuilder();
+                yaml.AppendLine($"nc: {names.Length}");
+                yaml.Append("names: [");
+                yaml.Append(string.Join(", ", names.Select(n => $"'{n.Replace("'", "''")}'")));
+                yaml.AppendLine("]");
+                System.IO.File.WriteAllText(
+                    System.IO.Path.Combine(exportDirectory, "data.yaml"),
+                    yaml.ToString());
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to export classes file: {ex.Message}");
             }
         }
 
@@ -2519,6 +2572,21 @@ namespace YoableWPF
                 return; // Let other handlers (like zoom) handle it
             }
 
+            // If the pointer is over the class list, scroll that list instead of
+            // navigating images. The window-level Preview handler would otherwise
+            // swallow every wheel event, so we forward it to the ClassListBox here.
+            if (e.OriginalSource is DependencyObject src && IsDescendantOf(src, ClassListBox))
+            {
+                var scrollViewer = FindVisualChild<ScrollViewer>(ClassListBox);
+                if (scrollViewer != null)
+                {
+                    scrollViewer.ScrollToVerticalOffset(
+                        scrollViewer.VerticalOffset - e.Delta / 3.0);
+                    e.Handled = true;
+                }
+                return;
+            }
+
             // Only navigate if we have images loaded
             if (ImageListBox.Items.Count == 0)
             {
@@ -2550,6 +2618,35 @@ namespace YoableWPF
                 }
             }
         }
+        // Returns true if 'node' is (or is contained within) 'ancestor' in the visual tree.
+        private static bool IsDescendantOf(DependencyObject node, DependencyObject ancestor)
+        {
+            while (node != null)
+            {
+                if (node == ancestor)
+                    return true;
+                node = VisualTreeHelper.GetParent(node) ?? (node as FrameworkElement)?.Parent;
+            }
+            return false;
+        }
+
+        // Depth-first search for the first visual child of type T.
+        private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            int count = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child is T typed)
+                    return typed;
+
+                var result = FindVisualChild<T>(child);
+                if (result != null)
+                    return result;
+            }
+            return null;
+        }
+
         private void SortByName_Click(object sender, RoutedEventArgs e)
         {
             uiStateManager.SortImagesByName();
